@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ForgePad">
+<meta name="theme-color" content="#1b1d23">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.png">
+<title>ForgePad</title>
+<style>
+:root{--bg:#1b1d23;--bar:#23262e;--line:#343842;--fg:#d9dce3;--ac:#e0a458;--on:#2f333d}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:14px -apple-system,system-ui,sans-serif}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+header{display:flex;gap:8px;align-items:center;padding:6px 8px;background:var(--bar);border-bottom:1px solid var(--line)}
+#fn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button{background:var(--on);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:14px}
+button.run{background:var(--ac);color:#1b1d23;border-color:var(--ac);font-weight:600}
+main{flex:1;display:flex;min-height:0;position:relative}
+#side{width:210px;background:var(--bar);overflow:auto;border-right:1px solid var(--line)}
+#side div{display:flex;justify-content:space-between;align-items:center;padding:11px 10px}
+#side .on{background:var(--on);box-shadow:inset 3px 0 var(--ac)}
+#side b{font-weight:400;opacity:.5;padding:0 6px}
+#col{flex:1;display:flex;flex-direction:column;min-width:0}
+#ed{flex:1;min-height:0}
+#out{height:40%;border-top:1px solid var(--line);display:flex;flex-direction:column}
+#log{margin:0;padding:8px;overflow:auto;flex:1;font:13px ui-monospace,Menlo,monospace;white-space:pre-wrap}
+#fr{flex:1;border:0;background:#fff}
+[hidden]{display:none!important}
+@media(max-width:600px){#side{position:absolute;top:0;bottom:0;z-index:5}}
+</style></head><body>
+<header>
+<button id="tg" aria-label="Files">Files</button>
+<span id="fn"></span>
+<button id="nw">New</button>
+<button id="rn" class="run">Run</button>
+</header>
+<main>
+<nav id="side"></nav>
+<div id="col"><div id="ed"></div>
+<section id="out" hidden><pre id="log"></pre><iframe id="fr" sandbox="allow-scripts"></iframe></section></div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const B='https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min';
+const LANG={js:'javascript',ts:'typescript',json:'json',html:'html',css:'css',py:'python',md:'markdown',sh:'shell',java:'java',c:'c',cpp:'cpp',go:'go',rs:'rust',sql:'sql',yml:'yaml',yaml:'yaml',php:'php',rb:'ruby'};
+let db,models={},cur,editor;
+const idb=()=>new Promise((ok,no)=>{const r=indexedDB.open('forgepad',1);r.onupgradeneeded=()=>r.result.createObjectStore('files');r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});
+const tx=(m,f)=>new Promise((ok,no)=>{const t=db.transaction('files',m);f(t.objectStore('files'));t.oncomplete=ok;t.onerror=()=>no(t.error)});
+const put=(n,v)=>tx('readwrite',s=>s.put(v,n));
+const del=n=>tx('readwrite',s=>s.delete(n));
+const all=()=>new Promise(ok=>{const o={},q=db.transaction('files').objectStore('files').openCursor();q.onsuccess=()=>{const c=q.result;if(c){o[c.key]=c.value;c.continue()}else ok(o)}});
+function mk(n,v){const m=monaco.editor.createModel(v,LANG[n.split('.').pop()]||'plaintext');let t;m.onDidChangeContent(()=>{clearTimeout(t);t=setTimeout(()=>put(n,m.getValue()),400)});models[n]=m}
+function list(){const s=$('#side');s.innerHTML='';Object.keys(models).sort().forEach(n=>{const d=document.createElement('div');d.className=n===cur?'on':'';const a=document.createElement('span');a.textContent=n;const x=document.createElement('b');x.textContent='✕';x.onclick=e=>{e.stopPropagation();rm(n)};d.append(a,x);d.onclick=()=>{go(n);if(innerWidth<=600)s.hidden=true};s.append(d)})}
+function go(n){cur=n;editor.setModel(models[n]);$('#fn').textContent=n;list()}
+async function add(){const n=(prompt('File name, e.g. app.js or index.html')||'').trim();if(!n||models[n])return;await put(n,'');mk(n,'');go(n)}
+async function rm(n){if(!confirm('Delete '+n+'?'))return;models[n].dispose();delete models[n];await del(n);if(!Object.keys(models).length){await put('untitled.txt','');mk('untitled.txt','')}go(cur===n?Object.keys(models)[0]:cur)}
+function log(t){$('#log').textContent+=t+'\n'}
+const PY='https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';let py;
+async function getPy(){if(!py){log('Loading Python (first time downloads a few MB)...');
+await new Promise((ok,no)=>{const s=document.createElement('script');s.src=PY+'pyodide.js';s.onload=ok;s.onerror=()=>no(new Error('Could not load Python. Open the app online once.'));document.head.append(s)});
+py=await loadPyodide({indexURL:PY});py.setStdout({batched:log});py.setStderr({batched:log})}return py}
+async function runPy(v){try{const p=await getPy();for(const n in models)p.FS.writeFile(n,models[n].getValue());await p.loadPackagesFromImports(v);await p.runPythonAsync(v);log('[done]')}catch(e){log(String(e))}}
+function run(){const v=models[cur].getValue(),x=cur.split('.').pop();$('#out').hidden=false;$('#log').textContent='';const f=$('#fr');
+if(x==='html'){f.hidden=false;f.srcdoc=v}
+else if(x==='js'){f.hidden=true;f.srcdoc='<script>const L=(...a)=>parent.postMessage({l:a.map(q=>typeof q==="object"?JSON.stringify(q):String(q)).join(" ")},"*");console.log=console.info=L;console.error=(...a)=>L("Error:",...a);onerror=m=>L("Error: "+m)<\/script><script>'+v.replace(/<\/script/gi,'<\\/script')+'<\/script>'}
+else if(x==='py'){f.hidden=true;runPy(v)}
+else{f.hidden=true;log('Run supports .js, .html and .py.')}}
+addEventListener('message',e=>{if(e.data&&e.data.l!==undefined)log(e.data.l)});
+$('#tg').onclick=()=>$('#side').hidden=!$('#side').hidden;
+$('#nw').onclick=add;$('#rn').onclick=run;
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');
+(async()=>{
+db=await idb();navigator.storage&&navigator.storage.persist&&navigator.storage.persist();
+let f=await all();
+if(!Object.keys(f).length){f={'hello.js':"console.log('Hello from ForgePad');\n"};await put('hello.js',f['hello.js'])}
+require.config({paths:{vs:B+'/vs'}});
+window.MonacoEnvironment={getWorkerUrl:()=>'data:text/javascript;charset=utf-8,'+encodeURIComponent("self.MonacoEnvironment={baseUrl:'"+B+"/'};importScripts('"+B+"/vs/base/worker/workerMain.js');")};
+require(['vs/editor/editor.main'],()=>{
+editor=monaco.editor.create($('#ed'),{theme:'vs-dark',automaticLayout:true,fontSize:15,minimap:{enabled:false}});
+for(const n in f)mk(n,f[n]);
+editor.addCommand(monaco.KeyMod.CtrlCmd|monaco.KeyCode.Enter,run);
+go(Object.keys(f)[0]);
+});
+})();
+</script></body></html>
